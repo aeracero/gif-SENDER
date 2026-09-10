@@ -3,7 +3,7 @@ watch_cog.py
 （bot.py と同じフォルダに置くこと。サブフォルダに分けるとRailway上で
  ModuleNotFoundErrorの原因になりやすいため、フラットな構成にしています）
 指定したユーザーが発言するたびに、設定したキーワードに合う画像(GIF/静止画)を
-即座に自動送信するCogです（クールダウンなし・毎回反応します）。
+自動送信するCogです（クールダウンなし・新しい候補がない場合はスキップ）。
 
 画像ソース:
 - GIF: KLIPY API (Tenor互換エンドポイント。要APIキー / 環境変数 GIF_API_KEY)
@@ -35,10 +35,13 @@ watch_cog.py
 /erase_all … このチャンネルでBotが送ったメッセージを全て削除
 """
 
+import asyncio
 import json
 import logging
 import os
 import random
+import tempfile
+import weakref
 from pathlib import Path
 from typing import Optional
 
@@ -74,15 +77,28 @@ def _load_data() -> dict:
 
 
 def _save_data(data: dict) -> None:
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=DATA_FILE.parent, delete=False
+        ) as f:
+            temporary = Path(f.name)
+            json.dump(data, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temporary, DATA_FILE)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 class WatchCog(commands.Cog):
     """指定ユーザーの発言に反応して画像を送るCog"""
 
     watch_group = app_commands.Group(
-        name="watch", description="指定した相手が発言したときに画像を送る機能"
+        name="watch", description="指定した相手が発言したときに画像を送る機能",
+        guild_only=True
     )
 
     def __init__(self, bot: commands.Bot):
@@ -96,9 +112,10 @@ class WatchCog(commands.Cog):
         # } } }
         self.data: dict = _load_data()
         self.session: Optional[aiohttp.ClientSession] = None
+        self._target_locks = weakref.WeakValueDictionary()
 
     async def cog_load(self):
-        self.session = aiohttp.ClientSession()
+        self.session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15))
 
     async def cog_unload(self):
         if self.session:
@@ -122,6 +139,8 @@ class WatchCog(commands.Cog):
         gif_keyword: Optional[str] = None,
         image_keyword: Optional[str] = None,
     ):
+        gif_keyword = (gif_keyword or "").strip() or None
+        image_keyword = (image_keyword or "").strip() or None
         if not gif_keyword and not image_keyword:
             await interaction.response.send_message(
                 "⚠️ gif_keyword か image_keyword のどちらかは指定してください。",
@@ -161,6 +180,7 @@ class WatchCog(commands.Cog):
                 f"{target.mention} さんは監視対象になっていません。", ephemeral=True
             )
             return
+        cfg["revision"] = cfg.get("revision", 0) + 1
         cfg["enabled"] = False
         _save_data(self.data)
         logger.info(f"/watch off: guild={guild_id} target={target}")
@@ -221,11 +241,18 @@ class WatchCog(commands.Cog):
                 parts.append(f"画像:「{cfg['image_keyword']}」")
             status = "▶️稼働中" if cfg.get("enabled", True) else "⏸️停止中"
             lines.append(f"- {name} → {' / '.join(parts)}（{status}）")
-        await interaction.response.send_message("\n".join(lines), ephemeral=True)
+        # Discord limits message content to 2,000 characters.
+        content = "\n".join(lines)
+        await interaction.response.send_message(content[:2000], ephemeral=True)
+        for start in range(2000, len(content), 2000):
+            await interaction.followup.send(content[start:start + 2000], ephemeral=True)
 
     @app_commands.command(
         name="erase_all", description="このチャンネルでBotが送信したメッセージを全て削除します"
     )
+    @app_commands.guild_only()
+    @app_commands.default_permissions(manage_messages=True)
+    @app_commands.checks.has_permissions(manage_messages=True)
     async def erase_all(self, interaction: discord.Interaction):
         if not isinstance(interaction.channel, (discord.TextChannel, discord.Thread)):
             await interaction.response.send_message(
@@ -241,7 +268,7 @@ class WatchCog(commands.Cog):
             return m.author.id == self.bot.user.id
 
         try:
-            deleted = await interaction.channel.purge(limit=1000, check=is_bot_message)
+            deleted = await interaction.channel.purge(limit=None, check=is_bot_message)
             logger.info(
                 f"/erase_all: channel={interaction.channel} ({interaction.channel.id}) "
                 f"deleted={len(deleted)}"
@@ -272,28 +299,44 @@ class WatchCog(commands.Cog):
         if not cfg or not cfg.get("enabled", True):
             return
 
-        logger.info(f"発言検知: guild={message.guild.id} user={message.author} ({message.author.id})")
+        # Serialize selection, send and history update for the same target.
+        # Weak references let idle target locks disappear automatically.
+        key = (guild_id, user_id)
+        lock = self._target_locks.setdefault(key, asyncio.Lock())
+        revision = cfg.get("revision", 0)
+        async with lock:
+            def still_active():
+                return (
+                    self.data.get(guild_id, {}).get(user_id) is cfg
+                    and cfg.get("enabled", True)
+                    and cfg.get("revision", 0) == revision
+                )
 
-        media_url = await self._fetch_media(cfg, exclude_url=cfg.get("last_media_url"))
-        if not media_url:
-            logger.warning(f"送信対象が見つかりませんでした: user={message.author}")
-            return
+            if not still_active():
+                return
+            media_url = await self._fetch_media(cfg, exclude_url=cfg.get("last_media_url"))
+            # Commands can change/remove the target while the HTTP request awaits.
+            if not still_active():
+                return
+            if not media_url:
+                logger.warning("新しい送信候補がありません: user=%s", message.author)
+                return
 
-        try:
-            await message.channel.send(media_url)
-        except Exception:
-            logger.exception(f"メッセージ送信に失敗しました: user={message.author}")
-            return
+            try:
+                await message.channel.send(media_url)
+            except Exception:
+                logger.exception("メッセージ送信に失敗しました: user=%s", message.author)
+                return
 
-        cfg["last_media_url"] = media_url
-        _save_data(self.data)
-        logger.info(f"送信成功: user={message.author} url={media_url}")
+            cfg["last_media_url"] = media_url
+            _save_data(self.data)
+            logger.info("送信成功: user=%s url=%s", message.author, media_url)
 
     async def _fetch_media(self, cfg: dict, exclude_url: Optional[str] = None) -> Optional[str]:
         """設定されているgif_keyword / image_keywordからランダムに1件取得。
         両方設定されている場合はどちらを先に試すかもランダムにし、
         失敗したらもう一方にフォールバックする。exclude_urlが指定されている場合、
-        候補が複数あればそのURLを避けて選ぶ（＝前回と必ず違う画像になる）。
+        そのURLを避けて選ぶ。新しい候補がなければ別のソースを試す。
         """
         options = []
         if cfg.get("gif_keyword"):
@@ -315,13 +358,9 @@ class WatchCog(commands.Cog):
 
     @staticmethod
     def _pick_excluding(candidates: list, exclude_url: Optional[str]) -> Optional[str]:
-        """candidatesからランダムに1件選ぶ。exclude_urlと異なるものが他にあれば
-        必ずそちらを選ぶ（候補がexclude_urlしか無い場合のみ同じものを返す）。"""
-        if not candidates:
-            return None
-        filtered = [c for c in candidates if c != exclude_url]
-        pool = filtered if filtered else candidates
-        return random.choice(pool)
+        """前回のURLを除外する。代替候補がなければ再送せずNoneを返す。"""
+        pool = list(dict.fromkeys(c for c in candidates if c and c != exclude_url))
+        return random.choice(pool) if pool else None
 
     async def _fetch_gif(self, keyword: str, exclude_url: Optional[str] = None) -> Optional[str]:
         if not GIF_API_KEY or self.session is None:
@@ -366,7 +405,7 @@ class WatchCog(commands.Cog):
         if len(unique_candidates) <= 1:
             logger.warning(
                 f"GIF keyword={keyword!r} はヒット数が{len(unique_candidates)}件しかなく、"
-                "同じ画像が繰り返される可能性があります。もっと一般的なキーワードを試してください。"
+                "前回と同じURLは再送しません。候補を増やすには一般的なキーワードを試してください。"
             )
         return self._pick_excluding(unique_candidates, exclude_url)
 
@@ -406,7 +445,7 @@ class WatchCog(commands.Cog):
         if len(unique_candidates) <= 1:
             logger.warning(
                 f"画像 keyword={keyword!r} はヒット数が{len(unique_candidates)}件しかなく、"
-                "同じ画像が繰り返される可能性があります。もっと一般的なキーワードを試してください。"
+                "前回と同じURLは再送しません。候補を増やすには一般的なキーワードを試してください。"
             )
         return self._pick_excluding(unique_candidates, exclude_url)
 
