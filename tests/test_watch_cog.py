@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import watch_cog as module
 from watch_cog import WatchCog
@@ -100,6 +100,57 @@ class WatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(len(chunks), 1)
         self.assertTrue(all(len(c) <= 2000 for c in chunks))
         self.assertEqual(''.join(chunks).count('画像:'), 40)
+
+    def test_image_metadata_rejects_unrelated_or_partial_terms(self):
+        matches = self.cog._image_matches_keyword
+        self.assertFalse(matches({'title': 'Cathedral in Paris'}, 'cat'))
+        self.assertFalse(matches({'title': 'red flower'}, 'red cat'))
+        self.assertFalse(matches({'url': 'https://example.com/cat.jpg'}, 'cat'))
+        self.assertTrue(matches({'title': 'RED CAT sleeping'}, 'red cat'))
+        self.assertTrue(matches({'title': 'ＣＡＴ', 'tags': [{'name': 'red'}]}, 'red cat'))
+        self.assertTrue(matches({'title': 'かわいい猫の写真'}, '猫'))
+        self.assertFalse(matches({'title': 'A dog', 'tags': None}, 'cat'))
+
+    def test_selection_never_expands_beyond_relevant_pool(self):
+        candidates = [str(i) for i in range(30)]
+        with patch.object(module.random, 'choice', side_effect=lambda pool: pool[-1]):
+            self.assertEqual(self.cog._pick_excluding(candidates, '0'), '9')
+            self.assertEqual(self.cog._pick_excluding(candidates, '9'), '8')
+
+    def mock_search(self, results):
+        response = SimpleNamespace(status=200, json=AsyncMock(return_value={'results': results, 'next': 'next-page'}))
+        context = MagicMock()
+        context.__aenter__ = AsyncMock(return_value=response)
+        context.__aexit__ = AsyncMock(return_value=False)
+        session = SimpleNamespace(get=MagicMock(return_value=context))
+        self.cog.session = session
+        return session
+
+    async def test_gif_requests_ranked_first_page_and_excludes_previous(self):
+        session = self.mock_search([
+            {'media_formats': {'gif': {'url': 'a'}}},
+            {'media_formats': {'gif': {'url': 'b'}}},
+        ])
+        with patch.object(module, 'GIF_API_KEY', 'test-key'):
+            result = await self.cog._fetch_gif('cat', 'a')
+        self.assertEqual(result, 'b')
+        session.get.assert_called_once()
+        self.assertEqual(session.get.call_args.kwargs['params']['random'], 'false')
+
+    async def test_image_search_filters_before_random_selection(self):
+        self.mock_search([
+            {'title': 'Cathedral', 'url': 'wrong'},
+            {'title': 'cat', 'url': 'previous'},
+            {'title': 'kitten', 'tags': [{'name': 'cat'}], 'url': 'correct'},
+            {'title': 'dog', 'url': 'also-wrong'},
+        ])
+        self.assertEqual(await self.cog._fetch_image('cat', 'previous'), 'correct')
+        self.cog.session.get.assert_called_once()
+
+    async def test_no_matching_image_skips_instead_of_using_unrelated_result(self):
+        self.mock_search([{'title': 'dog', 'url': 'wrong'}])
+        with self.assertLogs(module.logger, level='WARNING'):
+            self.assertIsNone(await self.cog._fetch_image('cat'))
 
     async def test_cog_registers_and_uses_bounded_timeout(self):
         import discord

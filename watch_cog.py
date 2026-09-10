@@ -17,7 +17,7 @@ watch_cog.py
 
 直前に送った画像/GIFのURLを対象ごとに記録し(設定ファイルに永続化)、
 次回はそれを避けて選ぶことで連続で同じものが出るのを防いでいます。
-検索は最大2ページ分取得して候補プールを増やしており、候補が少ないキーワードは
+検索は1ページ目の関連度が高い候補に絞り、候補が少ないキーワードは
 ログに警告が出るようにしています。
 
 ログ:
@@ -40,6 +40,8 @@ import json
 import logging
 import os
 import random
+import re
+import unicodedata
 import tempfile
 import weakref
 from pathlib import Path
@@ -57,11 +59,11 @@ GIF_API_KEY = os.environ.get("GIF_API_KEY", "")
 GIF_SEARCH_URL = "https://api.klipy.com/v2/search"
 OPENVERSE_SEARCH_URL = "https://api.openverse.org/v1/images/"
 
-# 1ページあたりの取得件数。候補プールを増やすほど「連続で同じ画像」が起きにくくなる。
-SEARCH_POOL_SIZE = 50
-# 追加で何ページ分取得するか（1ページ目 + これで合計ページ数）。ヒット数が
-# 少ないニッチなキーワードだと、増やしてもあまり変わらないこともある。
-MAX_EXTRA_PAGES = 1
+# Prefer relevance over a large random pool. Never expand into lower-ranked
+# pages merely to find something different from the previous image.
+SEARCH_POOL_SIZE = 30
+MAX_EXTRA_PAGES = 0
+RELEVANT_POOL_SIZE = 10
 
 # データ保存先。Railwayではプロジェクトのルートで実行される想定なので、
 # カレントディレクトリ基準にしてbot.pyと同階層に置く。
@@ -359,7 +361,8 @@ class WatchCog(commands.Cog):
     @staticmethod
     def _pick_excluding(candidates: list, exclude_url: Optional[str]) -> Optional[str]:
         """前回のURLを除外する。代替候補がなければ再送せずNoneを返す。"""
-        pool = list(dict.fromkeys(c for c in candidates if c and c != exclude_url))
+        ranked = list(dict.fromkeys(c for c in candidates if c))[:RELEVANT_POOL_SIZE]
+        pool = [c for c in ranked if c != exclude_url]
         return random.choice(pool) if pool else None
 
     async def _fetch_gif(self, keyword: str, exclude_url: Optional[str] = None) -> Optional[str]:
@@ -374,7 +377,7 @@ class WatchCog(commands.Cog):
                 "key": GIF_API_KEY,
                 "client_key": "watch_cog",
                 "limit": SEARCH_POOL_SIZE,
-                "random": "true",
+                "random": "false",
                 "media_filter": "gif",
             }
             if pos:
@@ -409,9 +412,35 @@ class WatchCog(commands.Cog):
             )
         return self._pick_excluding(unique_candidates, exclude_url)
 
+    @staticmethod
+    def _image_matches_keyword(result: dict, keyword: str) -> bool:
+        """Require each query term in title/tags; this is not visual recognition.
+
+        Normalize width/case, match Latin words on boundaries (cat != cathedral),
+        and allow substrings for Japanese/Chinese text without word separators.
+        Missing metadata fails closed instead of sending an unrelated result.
+        """
+        def normalize(value):
+            return unicodedata.normalize("NFKC", value).casefold() if isinstance(value, str) else ""
+
+        fields = [normalize(result.get("title"))]
+        for tag in result.get("tags") or []:
+            fields.append(normalize(tag.get("name") if isinstance(tag, dict) else tag))
+        text = " ".join(fields)
+        terms = re.findall(r"[^\W_]+", normalize(keyword))
+        if not terms:
+            return False
+        for term in terms:
+            if re.search(r"[\u3040-\u30ff\u3400-\u9fff]", term):
+                if term not in text:
+                    return False
+            elif not re.search(r"(?<!\w)" + re.escape(term) + r"(?!\w)", text):
+                return False
+        return True
+
     async def _fetch_image(self, keyword: str, exclude_url: Optional[str] = None) -> Optional[str]:
         """Openverse (CCライセンス画像検索、APIキー不要)から静止画を取得。
-        候補を増やすためライセンス種別の絞り込みはあえて行っていない。
+        タイトル・タグに全検索語が含まれる候補のみ採用する。
         """
         if self.session is None:
             return None
@@ -434,7 +463,10 @@ class WatchCog(commands.Cog):
                 break
 
             results = payload.get("results", [])
-            page_candidates = [r.get("url") or r.get("thumbnail") for r in results]
+            page_candidates = [
+                r.get("url") or r.get("thumbnail") for r in results
+                if self._image_matches_keyword(r, keyword)
+            ]
             page_candidates = [c for c in page_candidates if c]
             candidates.extend(page_candidates)
             if not results:
