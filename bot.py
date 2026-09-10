@@ -24,11 +24,19 @@ Railwayでの実行:
 """
 
 import asyncio
+import logging
 import os
 
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
+
+# ログをRailwayのログ画面（標準出力）に出す設定。
+# watch_cog.py側のlogger.info/warning/exceptionもこれで表示されるようになる。
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
 
 # ローカル実行時のみ .env を読み込む。Railwayでは環境変数が直接注入されるため
 # .env が無くてもエラーにはならない(load_dotenvは静かに無視する)。
@@ -44,6 +52,7 @@ intents = discord.Intents.default()
 intents.members = True  # /watch add で @メンションからメンバーを解決するために必要
 
 bot = commands.Bot(command_prefix="!", intents=intents)
+logger = logging.getLogger(__name__)
 
 INITIAL_EXTENSIONS = [
     "watch_cog",
@@ -59,7 +68,7 @@ async def _sync_to_guild(guild: discord.abc.Snowflake) -> int:
 
 @bot.event
 async def on_ready():
-    print(f"Logged in as {bot.user} (ID: {bot.user.id})")
+    logger.info(f"Logged in as {bot.user} (ID: {bot.user.id})")
     try:
         # まずグローバルコマンドとして登録（新規参加サーバー用のベースになる）
         await bot.tree.sync()
@@ -67,9 +76,9 @@ async def on_ready():
         # 現在参加している全サーバーに即時反映
         for guild in bot.guilds:
             count = await _sync_to_guild(guild)
-            print(f"Synced {count} slash command(s) instantly to {guild.name} ({guild.id})")
-    except Exception as e:
-        print(f"Slash command sync failed: {e}")
+            logger.info(f"Synced {count} slash command(s) instantly to {guild.name} ({guild.id})")
+    except Exception:
+        logger.exception("Slash command sync failed")
 
 
 @bot.event
@@ -77,9 +86,9 @@ async def on_guild_join(guild: discord.Guild):
     """新しく招待されたサーバーにも即座にコマンドを反映する。"""
     try:
         count = await _sync_to_guild(guild)
-        print(f"Synced {count} slash command(s) instantly to newly joined guild: {guild.name} ({guild.id})")
-    except Exception as e:
-        print(f"Slash command sync failed for guild {guild.id}: {e}")
+        logger.info(f"Synced {count} slash command(s) instantly to newly joined guild: {guild.name} ({guild.id})")
+    except Exception:
+        logger.exception(f"Slash command sync failed for guild {guild.id}")
 
 
 async def main():

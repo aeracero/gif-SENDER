@@ -21,13 +21,14 @@
 
 ## コマンド
 
-- `/watch add target:@ユーザー [gif_keyword:単語] [image_keyword:単語] [cooldown:秒数]`
+- `/watch add target:@ユーザー [gif_keyword:単語] [image_keyword:単語]`
   - `gif_keyword` / `image_keyword` はどちらか片方だけでもOK、両方指定すると発言のたびにランダムでどちらかを送信します。
-  - `cooldown` は連投を防ぐための秒数（省略時10秒）。
+  - クールダウンはありません。対象が発言するたびに毎回即座に反応します。
 - `/watch off target:@ユーザー` — 設定は残したまま送信だけ一時停止（即時反映）
 - `/watch on target:@ユーザー` — 一時停止を解除（即時反映）
 - `/watch remove target:@ユーザー` — 設定そのものを削除
 - `/watch list` — 現在の設定一覧（稼働中/停止中も表示）を表示
+- `/erase_all` — 実行したチャンネルでBotが送信したメッセージを全て削除（Botに「メッセージの管理」権限が必要）
 
 ## ローカルでの動かし方
 
@@ -45,7 +46,7 @@ python bot.py
 
 1. [Discord Developer Portal](https://discord.com/developers/applications) でアプリケーションを作成し、Botトークンを取得 → `DISCORD_TOKEN`
 2. 同ページの「Bot」タブで **SERVER MEMBERS INTENT** を必ずONにする（`@ユーザー` を選択するのに必要）
-3. OAuth2 → URL Generator で `bot` と `applications.commands` にチェックを入れ、生成したURLでサーバーに招待
+3. OAuth2 → URL Generator で `bot` と `applications.commands` にチェックを入れる。Bot Permissionsは View Channels, Send Messages, Embed Links, Read Message History に加えて、`/erase_all` を使うなら **Manage Messages（メッセージの管理）** も忘れずにチェックし、生成したURLでサーバーに招待
 4. GIF機能を使うなら [KLIPY](https://partner.klipy.com) で無料APIキーを取得 → `GIF_API_KEY`
    （画像検索(Openverse)側はAPIキー不要です）
 
@@ -94,3 +95,11 @@ WATCH_DATA_PATH=/INFO/watch_data.json
 ```
 
 設定後、再デプロイすると `watch_data.json` が `/INFO` 配下（永続ディスク）に保存されるようになり、以後の再デプロイでも `/watch add` の設定が保持されます。
+
+### ログの確認方法
+
+Railwayのプロジェクト画面 → 対象デプロイ → 「Deploy Logs」（または「View Logs」）で、bot側の動作ログがリアルタイムに表示されます。特に以下のような警告行が出ている場合は、そのキーワードでのヒット数自体が少なく、同じ画像/GIFが繰り返されやすい状態です。より一般的なキーワードに変更することをおすすめします。
+
+```
+GIF keyword='...' はヒット数が1件しかなく、同じ画像が繰り返される可能性があります。
+```
