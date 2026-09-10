@@ -40,8 +40,14 @@ python bot.py
 1. [Discord Developer Portal](https://discord.com/developers/applications) でアプリケーションを作成し、Botトークンを取得 → `DISCORD_TOKEN`
 2. 同ページの「Bot」タブで **SERVER MEMBERS INTENT** を必ずONにする（`@ユーザー` を選択するのに必要）
 3. OAuth2 → URL Generator で `bot` と `applications.commands` にチェックを入れ、生成したURLでサーバーに招待
-4. GIF機能を使うなら [Tenor API](https://tenor.com/gifapi/documentation) で無料キーを取得 → `TENOR_API_KEY`
+4. GIF機能を使うなら [KLIPY](https://partner.klipy.com) で無料APIキーを取得 → `GIF_API_KEY`
    （画像検索(Openverse)側はAPIキー不要です）
+
+   > **注意:** GoogleはTenor APIを2026年6月30日に完全終了しました。KLIPYはTenorと同じ
+   > パラメータ・レスポンス形式を持つ「Tenor互換エンドポイント」を無料で提供しているため、
+   > このプロジェクトではKLIPYを使っています。`partner.klipy.com` でサインアップし、
+   > 「Add Platform」からテスト用APIキー（レート制限付き・無料）を発行してください。
+   > 利用量が増えたら、ダッシュボードから本番用キーを申請できます。
 
 ## GitHubへのプッシュ
 
@@ -64,7 +70,7 @@ git push -u origin main
    （Railwayのダッシュボードで Deploy → Settings → Start Command を明示的に `python bot.py` に設定しても構いません）
 4. 「Variables」タブで環境変数を設定:
    - `DISCORD_TOKEN`
-   - `TENOR_API_KEY`
+   - `GIF_API_KEY`（KLIPYのキー）
 5. デプロイ後、ログに `Logged in as ...` と `Synced N slash command(s)` が出ていれば起動成功です
 
 ### 設定の永続化について（重要）

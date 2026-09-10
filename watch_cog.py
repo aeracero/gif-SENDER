@@ -4,7 +4,8 @@ cogs/watch_cog.py
 自動で送信するCogです。
 
 画像ソース:
-- GIF: Tenor API (要APIキー / 環境変数 TENOR_API_KEY)
+- GIF: KLIPY API (Tenor互換エンドポイント。要APIキー / 環境変数 GIF_API_KEY)
+  ※ Google が2026年6月30日にTenor APIを完全終了したため、Tenor互換のKLIPYに切り替えています
 - 静止画: Openverse API (APIキー不要・CCライセンス画像)
 
 対象ユーザーごとに「GIF用キーワード」と「画像用キーワード」を別々に設定できます。
@@ -30,8 +31,10 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-TENOR_API_KEY = os.environ.get("TENOR_API_KEY", "")
-TENOR_SEARCH_URL = "https://tenor.googleapis.com/v2/search"
+GIF_API_KEY = os.environ.get("GIF_API_KEY", "")
+# KLIPYが提供するTenor互換エンドポイント。パラメータもレスポンス形式もTenorと同一なので
+# 下の_fetch_gif()はTenor時代から変更していない。
+GIF_SEARCH_URL = "https://api.klipy.com/v2/search"
 OPENVERSE_SEARCH_URL = "https://api.openverse.org/v1/images/"
 
 # データ保存先。Railwayではプロジェクトのルートで実行される想定なので、
@@ -210,18 +213,18 @@ class WatchCog(commands.Cog):
         return None
 
     async def _fetch_gif(self, keyword: str) -> Optional[str]:
-        if not TENOR_API_KEY or self.session is None:
+        if not GIF_API_KEY or self.session is None:
             return None
         params = {
             "q": keyword,
-            "key": TENOR_API_KEY,
+            "key": GIF_API_KEY,
             "client_key": "watch_cog",
             "limit": 20,
             "random": "true",
             "media_filter": "gif",
         }
         try:
-            async with self.session.get(TENOR_SEARCH_URL, params=params) as resp:
+            async with self.session.get(GIF_SEARCH_URL, params=params) as resp:
                 if resp.status != 200:
                     return None
                 payload = await resp.json()
