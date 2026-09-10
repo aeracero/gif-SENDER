@@ -12,7 +12,7 @@ from discord.ext import commands
 from PIL import Image
 
 from gif_cog import GifCog, ReviewView
-from gif_sources import archive_items, collect_commons, commons_credit, download_commons
+from gif_sources import archive_items, collect_commons, commons_credit, commons_matches_keyword, download_commons
 from gif_store import GifStore, keyword_key, validate_gif
 import watch_cog
 from watch_cog import WatchCog
@@ -104,6 +104,42 @@ class StoreTests(unittest.TestCase):
         self.assertFalse(self.store.has_collection(1, 'cat'))
         self.assertFalse(self.store.has_collection(1, 'x' * 101))
         self.assertEqual(keyword_key(' A   B '), 'a b')
+
+    def test_unapprove_all_only_changes_approved_in_requested_collection(self):
+        approved = self.add('red')
+        pending = self.add('blue')
+        other_keyword = self.add('green', keyword='dog')
+        other_guild = self.add('yellow', guild=9)
+        for guild, media_id in [(1, approved), (1, other_keyword), (9, other_guild)]:
+            self.store.set_state(guild, media_id, 'approved')
+        self.assertEqual(self.store.unapprove_all(1, 'cat'), 1)
+        self.assertEqual(self.store.get(1, approved)['state'], 'excluded')
+        self.assertEqual(self.store.get(1, pending)['state'], 'pending')
+        self.assertEqual(self.store.get(1, other_keyword)['state'], 'approved')
+        self.assertEqual(self.store.get(9, other_guild)['state'], 'approved')
+        self.assertTrue(self.store.path(self.store.get(1, approved)).exists())
+        self.assertEqual(self.store.unapprove_all(1, 'cat'), 0)
+
+    def test_exclude_all_preserves_files_and_history(self):
+        approved = self.add('red')
+        pending = self.add('blue')
+        self.store.set_state(1, approved, 'approved')
+        self.store.mark_sent(1, 2, approved)
+        self.assertEqual(self.store.exclude_all(1, 'cat'), 2)
+        self.assertIsNone(self.store.pick(1, 2, 'cat'))
+        self.assertTrue(self.store.path(self.store.get(1, pending)).exists())
+        self.assertEqual(self.store.db.execute('SELECT COUNT(*) FROM history').fetchone()[0], 1)
+
+    def test_screenshot_regression_rejects_mandelbrot_for_cyrene(self):
+        page = {'title': 'File:Inversion of lambda Mandelbrot set with different translations.gif',
+                'imageinfo': [{'extmetadata': {'Artist': {'value': 'キュレネ'},
+                    'ImageDescription': {'value': 'A mathematical fractal animation'}}}]}
+        self.assertFalse(commons_matches_keyword(page, 'キュレネ'))
+        page['title'] = 'File:キュレネのアニメーション.gif'
+        self.assertTrue(commons_matches_keyword(page, 'キュレネ'))
+        self.assertFalse(commons_matches_keyword({'title': 'File:Cathedral.gif'}, 'cat'))
+        self.assertTrue(commons_matches_keyword({'title': 'File:ＣＡＴ.gif'}, 'cat'))
+        self.assertFalse(commons_matches_keyword({'title': 'File:cat.gif'}, 'red cat'))
 
     def test_zip_cannot_escape_storage_and_rejects_non_gifs(self):
         out = io.BytesIO()
@@ -238,12 +274,29 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
         with patch('gif_sources.download_commons', AsyncMock(return_value=gif('red'))):
             result = await collect_commons(session, self.watch.gif_store, 1, 'cat')
         self.assertEqual(result['added'], 1)
-        self.assertEqual(result['skipped'], 1)
+        self.assertEqual(result['unrelated'], 1)
         item = self.watch.gif_store.entries(1, 'cat')[0]
         self.assertEqual(item['state'], 'pending')
         self.assertEqual(item['credit'], 'Artist / CC0')
         self.assertIn('curid=1', item['source'])
         self.assertIsNone(commons_credit({'extmetadata': {'LicenseShortName': {'value': 'All rights reserved'}}}))
+
+    async def test_unrelated_commons_gif_is_never_downloaded(self):
+        payload = {'query': {'pages': [{'pageid': 111556851,
+            'title': 'File:Inversion of lambda Mandelbrot set with different translations.gif',
+            'imageinfo': [{'mime': 'image/gif', 'size': 10, 'url': 'https://upload.wikimedia.org/fractal.gif',
+                'extmetadata': {'Artist': {'value': 'Adam'}, 'LicenseShortName': {'value': 'CC0'}}}]}]}}
+        response = SimpleNamespace(status=200, json=AsyncMock(return_value=payload))
+        context = MagicMock()
+        context.__aenter__ = AsyncMock(return_value=response)
+        context.__aexit__ = AsyncMock(return_value=False)
+        session = SimpleNamespace(get=MagicMock(return_value=context))
+        with patch('gif_sources.download_commons', AsyncMock()) as download:
+            result = await collect_commons(session, self.watch.gif_store, 1, 'キュレネ')
+        download.assert_not_awaited()
+        self.assertEqual(result['added'], 0)
+        self.assertEqual(result['unrelated'], 1)
+        self.assertEqual(self.watch.gif_store.entries(1, 'キュレネ'), [])
 
     async def test_downloader_rejects_internal_hosts_without_request(self):
         session = SimpleNamespace(get=MagicMock())

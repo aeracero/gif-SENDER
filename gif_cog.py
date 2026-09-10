@@ -98,8 +98,9 @@ class GifCog(commands.Cog):
             result = await collect_commons(self.watch.session, self.store, interaction.guild_id, keyword, count)
         await interaction.followup.send(
             f"収集完了: 新規{result['added']}件 / 重複{result['duplicate']}件 / 対象外{result['skipped']}件。\n"
+            f"検索語不一致で除外: {result['unrelated']}件。\n"
             f"{result['reason']}\n`/gif review keyword:{keyword}` で確認・採用してください。\n"
-            'ローカルモードでは未採用の候補は送信しません。100件揃わない場合もあります。', ephemeral=True)
+            'CommonsにはキャラクターGIFが揃わないことがあります。0件の場合も無関係な画像では補いません。', ephemeral=True)
 
     @gif_group.command(name='import', description='自分で用意したGIFまたはZIPを一括取り込み（最大100件）')
     async def import_files(self, interaction: discord.Interaction, keyword: str,
@@ -198,6 +199,19 @@ class GifCog(commands.Cog):
         if not self.store.set_state(interaction.guild_id, gif_id, 'excluded'):
             raise ValueError('GIFが見つかりません。')
         await interaction.response.send_message(f'#{gif_id}を除外しました。', ephemeral=True)
+
+    @gif_group.command(name='exclude_all', description='このキーワードのGIFをすべて送信対象から外す（削除しません）')
+    async def exclude_all(self, interaction: discord.Interaction, keyword: str):
+        count = self.store.exclude_all(interaction.guild_id, keyword)
+        await interaction.response.send_message(
+            f'{count}件を除外しました。ファイルは保持しています。必要なGIFだけ /gif approve で復帰できます。',
+            ephemeral=True)
+
+    @gif_group.command(name='unapprove_all', description='採用済みGIFの採用を一括解除（未確認の候補・ファイルは保持）')
+    async def unapprove_all(self, interaction: discord.Interaction, keyword: str):
+        count = self.store.unapprove_all(interaction.guild_id, keyword)
+        await interaction.response.send_message(
+            f'{count}件の採用を解除しました。未確認の候補・ファイルは保持しています。', ephemeral=True)
 
     @gif_group.command(name='delete', description='指定したGIFの登録を削除し、未使用の実ファイルも削除')
     async def delete(self, interaction: discord.Interaction, gif_id: int):

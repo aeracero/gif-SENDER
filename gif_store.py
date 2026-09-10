@@ -172,6 +172,16 @@ class GifStore:
             return self.db.execute("UPDATE media SET state='approved' WHERE guild=? AND keyword=? AND state='pending'",
                                    (str(guild), keyword_key(keyword))).rowcount
 
+    def exclude_all(self, guild, keyword):
+        with self.db:
+            return self.db.execute("UPDATE media SET state='excluded' WHERE guild=? AND keyword=? AND state!='excluded'",
+                                   (str(guild), keyword_key(keyword))).rowcount
+
+    def unapprove_all(self, guild, keyword):
+        with self.db:
+            return self.db.execute("UPDATE media SET state='excluded' WHERE guild=? AND keyword=? AND state='approved'",
+                                   (str(guild), keyword_key(keyword))).rowcount
+
     def remove(self, guild, media_id):
         item = self.get(guild, media_id)
         if not item:
