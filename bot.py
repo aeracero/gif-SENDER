@@ -56,6 +56,7 @@ logger = logging.getLogger(__name__)
 
 INITIAL_EXTENSIONS = [
     "watch_cog",
+    "gif_cog",
 ]
 
 
