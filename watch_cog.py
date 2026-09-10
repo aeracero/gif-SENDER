@@ -77,6 +77,8 @@ class WatchCog(commands.Cog):
         self.data: dict = _load_data()
         # クールダウン管理: { (guild_id, user_id): last_sent_timestamp }
         self._last_sent: dict = {}
+        # 直前に送った画像URL: { (guild_id, user_id): url } — 連続で同じ画像を防ぐ
+        self._last_media: dict = {}
         self.session: Optional[aiohttp.ClientSession] = None
 
     async def cog_load(self):
@@ -187,14 +189,16 @@ class WatchCog(commands.Cog):
             return
         self._last_sent[key] = now
 
-        media_url = await self._fetch_media(cfg)
+        media_url = await self._fetch_media(cfg, exclude_url=self._last_media.get(key))
         if media_url:
             await message.channel.send(media_url)
+            self._last_media[key] = media_url
 
-    async def _fetch_media(self, cfg: dict) -> Optional[str]:
+    async def _fetch_media(self, cfg: dict, exclude_url: Optional[str] = None) -> Optional[str]:
         """設定されているgif_keyword / image_keywordからランダムに1件取得。
         両方設定されている場合はどちらを先に試すかもランダムにし、
-        失敗したらもう一方にフォールバックする。
+        失敗したらもう一方にフォールバックする。exclude_urlが指定されている場合、
+        候補が複数あればそのURLを避けて選ぶ（＝前回と必ず違う画像になる）。
         """
         options = []
         if cfg.get("gif_keyword"):
@@ -207,14 +211,24 @@ class WatchCog(commands.Cog):
         random.shuffle(options)
         for media_type, keyword in options:
             if media_type == "gif":
-                url = await self._fetch_gif(keyword)
+                url = await self._fetch_gif(keyword, exclude_url=exclude_url)
             else:
-                url = await self._fetch_image(keyword)
+                url = await self._fetch_image(keyword, exclude_url=exclude_url)
             if url:
                 return url
         return None
 
-    async def _fetch_gif(self, keyword: str) -> Optional[str]:
+    @staticmethod
+    def _pick_excluding(candidates: list, exclude_url: Optional[str]) -> Optional[str]:
+        """candidatesからランダムに1件選ぶ。exclude_urlと異なるものが他にあれば
+        必ずそちらを選ぶ（候補がexclude_urlしか無い場合のみ同じものを返す）。"""
+        if not candidates:
+            return None
+        filtered = [c for c in candidates if c != exclude_url]
+        pool = filtered if filtered else candidates
+        return random.choice(pool)
+
+    async def _fetch_gif(self, keyword: str, exclude_url: Optional[str] = None) -> Optional[str]:
         if not GIF_API_KEY or self.session is None:
             return None
         params = {
@@ -231,14 +245,16 @@ class WatchCog(commands.Cog):
                     return None
                 payload = await resp.json()
                 results = payload.get("results", [])
-                if not results:
-                    return None
-                chosen = random.choice(results)
-                return chosen["media_formats"]["gif"]["url"]
+                candidates = [
+                    r["media_formats"]["gif"]["url"]
+                    for r in results
+                    if r.get("media_formats", {}).get("gif", {}).get("url")
+                ]
+                return self._pick_excluding(candidates, exclude_url)
         except Exception:
             return None
 
-    async def _fetch_image(self, keyword: str) -> Optional[str]:
+    async def _fetch_image(self, keyword: str, exclude_url: Optional[str] = None) -> Optional[str]:
         """Openverse (CCライセンス画像検索、APIキー不要)から静止画を1件取得。"""
         if self.session is None:
             return None
@@ -253,10 +269,9 @@ class WatchCog(commands.Cog):
                     return None
                 payload = await resp.json()
                 results = payload.get("results", [])
-                if not results:
-                    return None
-                chosen = random.choice(results)
-                return chosen.get("url") or chosen.get("thumbnail")
+                candidates = [r.get("url") or r.get("thumbnail") for r in results]
+                candidates = [c for c in candidates if c]
+                return self._pick_excluding(candidates, exclude_url)
         except Exception:
             return None
 
