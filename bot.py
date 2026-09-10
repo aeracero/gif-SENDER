@@ -1,7 +1,10 @@
 """
 bot.py
 Discordボットのエントリーポイント。
-cogs/ 以下の拡張機能(watch_cogなど)を読み込んで起動します。
+同じディレクトリにある watch_cog.py を拡張機能として読み込んで起動します。
+（bot.py と watch_cog.py は必ず同じフォルダに置くこと。サブフォルダに分けると
+ Railway上で `ModuleNotFoundError` の原因になりやすいため、あえてフラットな
+ 構成にしています。）
 
 ローカル実行:
     python -m venv .venv && source .venv/bin/activate  (Windowsは .venv\\Scripts\\activate)
@@ -37,7 +40,7 @@ intents.members = True  # /watch add で @メンションからメンバーを�
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 INITIAL_EXTENSIONS = [
-    "cogs.watch_cog",
+    "watch_cog",
 ]
 
 

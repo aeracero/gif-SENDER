@@ -7,13 +7,17 @@
 ```
 .
 ├── bot.py              # エントリーポイント
-├── cogs/
-│   └── watch_cog.py    # /watch コマンド本体
+├── watch_cog.py        # /watch コマンド本体（bot.pyと同じ階層に置くこと）
 ├── requirements.txt
 ├── Procfile            # Railway用の起動コマンド定義
 ├── .env.example        # 環境変数のサンプル
 └── .gitignore
 ```
+
+> **重要:** `bot.py` と `watch_cog.py` は必ず同じフォルダ（リポジトリ直下）に置いてください。
+> サブフォルダに分けると、Railway上で `ModuleNotFoundError: No module named 'watch_cog'`
+> のようなエラーになることがあります。GitHubにファイルをアップロードする際、
+> 意図せずフォルダ構成が変わっていないか確認してください。
 
 ## コマンド
 

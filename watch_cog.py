@@ -1,5 +1,7 @@
 """
-cogs/watch_cog.py
+watch_cog.py
+（bot.py と同じフォルダに置くこと。サブフォルダに分けるとRailway上で
+ ModuleNotFoundErrorの原因になりやすいため、フラットな構成にしています）
 指定したユーザーが発言するたびに、設定したキーワードに合う画像(GIF/静止画)を
 自動で送信するCogです。
 
