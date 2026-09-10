@@ -4,6 +4,7 @@ from html.parser import HTMLParser
 import io
 import re
 import time
+import unicodedata
 from urllib.parse import urlsplit
 import zipfile
 
@@ -91,6 +92,29 @@ def commons_credit(info):
     return f'{artist} / {license_name}' + (f'\n{license_url}' if license_url else '')
 
 
+def commons_matches_keyword(page, keyword):
+    """Require all literal query terms in the file title or description.
+
+    Provider search rank alone is not evidence of a character match. Do not
+    use artist, license or arbitrary metadata as relevance evidence.
+    """
+    def normalize(value):
+        return unicodedata.normalize('NFKC', value).casefold()
+    info = (page.get('imageinfo') or [{}])[0]
+    description = info.get('extmetadata', {}).get('ImageDescription', {}).get('value', '')
+    text = normalize(plain(page.get('title', '').removeprefix('File:') + ' ' + description))
+    terms = re.findall(r'[^\W_]+', normalize(keyword))
+    if not terms:
+        return False
+    for term in terms:
+        if re.search(r'[\u3040-\u30ff\u3400-\u9fff]', term):
+            if term not in text:
+                return False
+        elif not re.search(r'(?<!\w)' + re.escape(term) + r'(?!\w)', text):
+            return False
+    return True
+
+
 async def collect_commons(session, store, guild, keyword, count=100):
     """Collect up to count NEW candidates (collection itself is capped at 100).
 
@@ -98,7 +122,7 @@ async def collect_commons(session, store, guild, keyword, count=100):
     commits. A timeout or interruption keeps already-downloaded candidates.
     """
     store.ensure_collection(guild, keyword)
-    result = {'added': 0, 'duplicate': 0, 'skipped': 0, 'reason': ''}
+    result = {'added': 0, 'duplicate': 0, 'skipped': 0, 'unrelated': 0, 'reason': ''}
     continuation = {}
     deadline = time.monotonic() + 600
     for _ in range(30):
@@ -127,6 +151,9 @@ async def collect_commons(session, store, guild, keyword, count=100):
             if time.monotonic() >= deadline:
                 result['reason'] = '収集時間の上限に達しました。途中まで保存しています。'
                 return result
+            if not commons_matches_keyword(page, keyword):
+                result['unrelated'] += 1
+                continue
             info = (page.get('imageinfo') or [{}])[0]
             credit = commons_credit(info)
             if info.get('mime') != 'image/gif' or info.get('size', MAX_GIF_BYTES + 1) > MAX_GIF_BYTES or not credit:

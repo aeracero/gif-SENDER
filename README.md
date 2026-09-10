@@ -194,3 +194,20 @@ SQLiteとGIFファイルはセットでバックアップしてください。�
 - 同じ実ファイルの重複は除去します。見た目が同じでも再エンコードされた別ファイルは別候補になる場合があります。
 
 参考: [Commonsの再利用ガイド](https://commons.wikimedia.org/wiki/Commons:Reusing_content_outside_Wikimedia)、[MediaWiki Imageinfo API](https://www.mediawiki.org/wiki/API:Imageinfo)
+
+### キャラクター名で無関係なGIFが出た場合
+
+CommonsはキャラクターGIFを集める用途に適した取得元ではありません。保存方法を変えても、取得元に欲しいGIFがなければ改善しません。
+
+収集時にはファイル名・説明に検索語がすべて含まれるかを確認し、一致しない候補はダウンロードしません。これは文字の一致であり、キャラクターの視覚判定や翻訳ではありません。同名の別対象もあるため、採用前の確認は必要です。
+
+以前に取り込んだ外れ候補は更新だけでは消えません。
+
+1. `/watch off target:@対象` で送信を停止。
+2. `/gif exclude_all keyword:キュレネ` で外れ候補を一括除外。実ファイルは残り、必要なものは `/gif approve gif_id:番号` で復帰できます。
+3. 欲しいGIFを `/gif import` で取り込み、`/gif review` で実物を確認して採用。
+4. `/watch on target:@対象` で再開。
+
+除外済みも100件の保存枠に含まれるため、枠が足りない場合は `/gif delete` で不要なIDを削除してください。検索語に合うGIFがない場合は0件で終わり、別ジャンルで埋め合わせません。
+
+採用済みだけを解除し、未確認候補をそのまま残したい場合は `/gif unapprove_all keyword:キュレネ` を使います。解除したGIFは「除外」になり、`approve_all` で意図せず再採用されません。復帰は `/gif approve gif_id:番号` で行います。
