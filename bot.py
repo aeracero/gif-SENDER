@@ -9,12 +9,18 @@ Discordボットのエントリーポイント。
 ローカル実行:
     python -m venv .venv && source .venv/bin/activate  (Windowsは .venv\\Scripts\\activate)
     pip install -r requirements.txt
-    .env に DISCORD_TOKEN と TENOR_API_KEY を書いて
+    .env に DISCORD_TOKEN と GIF_API_KEY を書いて
     python bot.py
 
 Railwayでの実行:
     Procfile の `worker: python bot.py` がそのままエントリーポイントになります。
-    環境変数(DISCORD_TOKEN, TENOR_API_KEY)はRailwayのVariablesタブで設定してください。
+    環境変数(DISCORD_TOKEN, GIF_API_KEY)はRailwayのVariablesタブで設定してください。
+
+スラッシュコマンドの反映について:
+    グローバル同期(sync())だけだと、Discord側の反映に最大1時間ほどかかることがあります。
+    このbotは起動時に「参加している全サーバー」へギルド単位でも同期するため、
+    どのサーバーでも起動直後から即座にコマンドが使えます。
+    新しいサーバーに招待されたときも on_guild_join で自動的に即時反映します。
 """
 
 import asyncio
@@ -44,14 +50,36 @@ INITIAL_EXTENSIONS = [
 ]
 
 
+async def _sync_to_guild(guild: discord.abc.Snowflake) -> int:
+    """指定ギルドにグローバルコマンドをコピーして即時同期し、件数を返す。"""
+    bot.tree.copy_global_to(guild=guild)
+    synced = await bot.tree.sync(guild=guild)
+    return len(synced)
+
+
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
     try:
-        synced = await bot.tree.sync()
-        print(f"Synced {len(synced)} slash command(s)")
+        # まずグローバルコマンドとして登録（新規参加サーバー用のベースになる）
+        await bot.tree.sync()
+
+        # 現在参加している全サーバーに即時反映
+        for guild in bot.guilds:
+            count = await _sync_to_guild(guild)
+            print(f"Synced {count} slash command(s) instantly to {guild.name} ({guild.id})")
     except Exception as e:
         print(f"Slash command sync failed: {e}")
+
+
+@bot.event
+async def on_guild_join(guild: discord.Guild):
+    """新しく招待されたサーバーにも即座にコマンドを反映する。"""
+    try:
+        count = await _sync_to_guild(guild)
+        print(f"Synced {count} slash command(s) instantly to newly joined guild: {guild.name} ({guild.id})")
+    except Exception as e:
+        print(f"Slash command sync failed for guild {guild.id}: {e}")
 
 
 async def main():
