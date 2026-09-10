@@ -23,12 +23,12 @@
 
 - `/watch add target:@ユーザー [gif_keyword:単語] [image_keyword:単語]`
   - `gif_keyword` / `image_keyword` はどちらか片方だけでもOK、両方指定すると発言のたびにランダムでどちらかを送信します。
-  - クールダウンはありません。対象が発言するたびに毎回即座に反応します。
+  - クールダウンはありません。対象の発言ごとに検索します。同じ対象への送信は順番に処理し、前回と同じURLしか見つからない場合は再送をスキップします。
 - `/watch off target:@ユーザー` — 設定は残したまま送信だけ一時停止（即時反映）
 - `/watch on target:@ユーザー` — 一時停止を解除（即時反映）
 - `/watch remove target:@ユーザー` — 設定そのものを削除
 - `/watch list` — 現在の設定一覧（稼働中/停止中も表示）を表示
-- `/erase_all` — 実行したチャンネルでBotが送信したメッセージを全て削除（Botに「メッセージの管理」権限が必要）
+- `/erase_all` — 実行したチャンネルでBotが送信したメッセージを全て削除（実行者とBotに「メッセージの管理」権限が必要）
 
 ## ローカルでの動かし方
 
@@ -38,7 +38,7 @@ cd watch-bot
 python -m venv .venv
 source .venv/bin/activate      # Windowsは .venv\Scripts\activate
 pip install -r requirements.txt
-cp .env.example .env           # DISCORD_TOKEN と TENOR_API_KEY を記入
+cp .env.example .env           # DISCORD_TOKEN と GIF_API_KEY を記入
 python bot.py
 ```
 
@@ -98,8 +98,16 @@ WATCH_DATA_PATH=/INFO/watch_data.json
 
 ### ログの確認方法
 
-Railwayのプロジェクト画面 → 対象デプロイ → 「Deploy Logs」（または「View Logs」）で、bot側の動作ログがリアルタイムに表示されます。特に以下のような警告行が出ている場合は、そのキーワードでのヒット数自体が少なく、同じ画像/GIFが繰り返されやすい状態です。より一般的なキーワードに変更することをおすすめします。
+Railwayのプロジェクト画面 → 対象デプロイ → 「Deploy Logs」（または「View Logs」）で、bot側の動作ログがリアルタイムに表示されます。特に以下のような警告行が出ている場合は、そのキーワードでのヒット数自体が少なく、新しい画像/GIFを送れずスキップされやすい状態です。より一般的なキーワードに変更することをおすすめします。
 
 ```
-GIF keyword='...' はヒット数が1件しかなく、同じ画像が繰り返される可能性があります。
+GIF keyword='...' はヒット数が1件しかなく、前回と同じURLは再送しません。
 ```
+
+## テスト
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+画像の候補が1件しかない場合、初回だけ送信し、以後は別の候補が見つかるまでスキップします。GIFと画像の両方を設定していれば別ソースも試します。別URLで配信される同一画像の内容判定は行いません。
