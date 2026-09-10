@@ -14,10 +14,15 @@ watch_cog.py
 両方設定した場合は発言のたびにランダムでどちらかを送信します
 （片方が取得失敗したらもう片方にフォールバック）。
 
+直前に送った画像/GIFのURLを対象ごとに記録し(設定ファイルに永続化)、
+次回はそれを避けて選ぶことで連続で同じものが出るのを防いでいます。
+
 使い方 (スラッシュコマンド):
 /watch add target:@ユーザー [gif_keyword:単語] [image_keyword:単語] [cooldown:秒数]
     ※ gif_keyword / image_keyword は少なくとも片方を指定してください
-/watch remove target:@ユーザー
+/watch off target:@ユーザー   … 設定を残したまま一時停止（即時反映）
+/watch on target:@ユーザー    … 一時停止を解除（即時反映）
+/watch remove target:@ユーザー … 設定そのものを削除
 /watch list
 """
 
@@ -34,10 +39,12 @@ from discord import app_commands
 from discord.ext import commands
 
 GIF_API_KEY = os.environ.get("GIF_API_KEY", "")
-# KLIPYが提供するTenor互換エンドポイント。パラメータもレスポンス形式もTenorと同一なので
-# 下の_fetch_gif()はTenor時代から変更していない。
+# KLIPYが提供するTenor互換エンドポイント。パラメータもレスポンス形式もTenorと同一。
 GIF_SEARCH_URL = "https://api.klipy.com/v2/search"
 OPENVERSE_SEARCH_URL = "https://api.openverse.org/v1/images/"
+
+# 候補プールを増やすほど「連続で同じ画像」が起きにくくなる。
+SEARCH_POOL_SIZE = 50
 
 # データ保存先。Railwayではプロジェクトのルートで実行される想定なので、
 # カレントディレクトリ基準にしてbot.pyと同階層に置く。
@@ -73,12 +80,12 @@ class WatchCog(commands.Cog):
         #       "gif_keyword": str | None,
         #       "image_keyword": str | None,
         #       "cooldown": int,
+        #       "enabled": bool,
+        #       "last_media_url": str | None,  # 再起動をまたいでも重複防止できるよう永続化
         # } } }
         self.data: dict = _load_data()
-        # クールダウン管理: { (guild_id, user_id): last_sent_timestamp }
+        # クールダウン管理: { (guild_id, user_id): last_sent_timestamp } — こちらはメモリのみでOK
         self._last_sent: dict = {}
-        # 直前に送った画像URL: { (guild_id, user_id): url } — 連続で同じ画像を防ぐ
-        self._last_media: dict = {}
         self.session: Optional[aiohttp.ClientSession] = None
 
     async def cog_load(self):
@@ -120,6 +127,8 @@ class WatchCog(commands.Cog):
             "gif_keyword": gif_keyword,
             "image_keyword": image_keyword,
             "cooldown": cooldown,
+            "enabled": True,
+            "last_media_url": None,
         }
         _save_data(self.data)
 
@@ -134,7 +143,41 @@ class WatchCog(commands.Cog):
             ephemeral=True,
         )
 
-    @watch_group.command(name="remove", description="設定を解除します")
+    @watch_group.command(name="off", description="設定を残したまま一時的に送信を停止します")
+    @app_commands.describe(target="停止するユーザー")
+    async def watch_off(self, interaction: discord.Interaction, target: discord.Member):
+        guild_id = str(interaction.guild_id)
+        cfg = self.data.get(guild_id, {}).get(str(target.id))
+        if not cfg:
+            await interaction.response.send_message(
+                f"{target.mention} さんは監視対象になっていません。", ephemeral=True
+            )
+            return
+        cfg["enabled"] = False
+        _save_data(self.data)
+        await interaction.response.send_message(
+            f"⏸️ {target.mention} さんへの送信を一時停止しました（設定は保持されています）。",
+            ephemeral=True,
+        )
+
+    @watch_group.command(name="on", description="一時停止していた送信を再開します")
+    @app_commands.describe(target="再開するユーザー")
+    async def watch_on(self, interaction: discord.Interaction, target: discord.Member):
+        guild_id = str(interaction.guild_id)
+        cfg = self.data.get(guild_id, {}).get(str(target.id))
+        if not cfg:
+            await interaction.response.send_message(
+                f"{target.mention} さんの設定がありません。先に /watch add で設定してください。",
+                ephemeral=True,
+            )
+            return
+        cfg["enabled"] = True
+        _save_data(self.data)
+        await interaction.response.send_message(
+            f"▶️ {target.mention} さんへの送信を再開しました。", ephemeral=True
+        )
+
+    @watch_group.command(name="remove", description="設定そのものを削除します")
     @app_commands.describe(target="解除するユーザー")
     async def watch_remove(self, interaction: discord.Interaction, target: discord.Member):
         guild_id = str(interaction.guild_id)
@@ -142,7 +185,7 @@ class WatchCog(commands.Cog):
         _save_data(self.data)
         if removed:
             await interaction.response.send_message(
-                f"🛑 {target.mention} さんの設定を解除しました。", ephemeral=True
+                f"🛑 {target.mention} さんの設定を削除しました。", ephemeral=True
             )
         else:
             await interaction.response.send_message(
@@ -166,7 +209,8 @@ class WatchCog(commands.Cog):
             if cfg.get("image_keyword"):
                 parts.append(f"画像:「{cfg['image_keyword']}」")
             cooldown = cfg.get("cooldown", DEFAULT_COOLDOWN)
-            lines.append(f"- {name} → {' / '.join(parts)}（{cooldown}秒）")
+            status = "▶️稼働中" if cfg.get("enabled", True) else "⏸️停止中"
+            lines.append(f"- {name} → {' / '.join(parts)}（{cooldown}秒 / {status}）")
         await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
     # ---------- メッセージ監視 ----------
@@ -179,7 +223,7 @@ class WatchCog(commands.Cog):
         guild_id = str(message.guild.id)
         user_id = str(message.author.id)
         cfg = self.data.get(guild_id, {}).get(user_id)
-        if not cfg:
+        if not cfg or not cfg.get("enabled", True):
             return
 
         cooldown = cfg.get("cooldown", DEFAULT_COOLDOWN)
@@ -189,10 +233,11 @@ class WatchCog(commands.Cog):
             return
         self._last_sent[key] = now
 
-        media_url = await self._fetch_media(cfg, exclude_url=self._last_media.get(key))
+        media_url = await self._fetch_media(cfg, exclude_url=cfg.get("last_media_url"))
         if media_url:
             await message.channel.send(media_url)
-            self._last_media[key] = media_url
+            cfg["last_media_url"] = media_url
+            _save_data(self.data)
 
     async def _fetch_media(self, cfg: dict, exclude_url: Optional[str] = None) -> Optional[str]:
         """設定されているgif_keyword / image_keywordからランダムに1件取得。
@@ -235,7 +280,7 @@ class WatchCog(commands.Cog):
             "q": keyword,
             "key": GIF_API_KEY,
             "client_key": "watch_cog",
-            "limit": 20,
+            "limit": SEARCH_POOL_SIZE,
             "random": "true",
             "media_filter": "gif",
         }
@@ -260,7 +305,7 @@ class WatchCog(commands.Cog):
             return None
         params = {
             "q": keyword,
-            "page_size": 20,
+            "page_size": SEARCH_POOL_SIZE,
             "license_type": "commercial,modification",
         }
         try:

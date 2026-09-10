@@ -24,8 +24,10 @@
 - `/watch add target:@ユーザー [gif_keyword:単語] [image_keyword:単語] [cooldown:秒数]`
   - `gif_keyword` / `image_keyword` はどちらか片方だけでもOK、両方指定すると発言のたびにランダムでどちらかを送信します。
   - `cooldown` は連投を防ぐための秒数（省略時10秒）。
-- `/watch remove target:@ユーザー` — 設定解除
-- `/watch list` — 現在の設定一覧を表示
+- `/watch off target:@ユーザー` — 設定は残したまま送信だけ一時停止（即時反映）
+- `/watch on target:@ユーザー` — 一時停止を解除（即時反映）
+- `/watch remove target:@ユーザー` — 設定そのものを削除
+- `/watch list` — 現在の設定一覧（稼働中/停止中も表示）を表示
 
 ## ローカルでの動かし方
 
@@ -82,3 +84,13 @@ git push -u origin main
 `watch_data.json` はコンテナのローカルディスクに保存されます。Railwayは**再デプロイのたびにファイルシステムがリセットされる**ため、`/watch add` で登録した設定は再デプロイ時に消えてしまいます。
 
 再起動をまたいで設定を残したい場合は、Railwayの **Volume**機能でプロジェクトのルートディレクトリ（または `WATCH_DATA_PATH` で指定したパス）を永続ディスクにマウントしてください。長期的にはSQLiteやRailwayのPostgresアドオンに保存先を切り替えるとより安全です。
+
+**Volumeを `/INFO` にマウントした場合:**
+
+Railwayの「Variables」タブに以下を追加してください（コード変更は不要です）。
+
+```
+WATCH_DATA_PATH=/INFO/watch_data.json
+```
+
+設定後、再デプロイすると `watch_data.json` が `/INFO` 配下（永続ディスク）に保存されるようになり、以後の再デプロイでも `/watch add` の設定が保持されます。
