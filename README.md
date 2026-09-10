@@ -8,6 +8,9 @@
 .
 ├── bot.py              # エントリーポイント
 ├── watch_cog.py        # /watch コマンド本体（bot.pyと同じ階層に置くこと）
+├── gif_store.py        # Volume上のGIF本体・SQLite・送信履歴
+├── gif_sources.py      # Commons収集とZIP取り込み
+├── gif_cog.py          # /gif 管理コマンド
 ├── requirements.txt
 ├── Procfile            # Railway用の起動コマンド定義
 ├── .env.example        # 環境変数のサンプル
@@ -122,3 +125,72 @@ python -m unittest discover -s tests -v
 例: `/watch add target:@ユーザー gif_keyword:作品名 キャラクター名`
 
 検索語に近い静止画が見つからない場合は送信をスキップします。ログの「画像 … 候補数」はタイトル・タグで絞り込んだ後の件数です。
+
+## VolumeからGIFを送る（ローカルコレクション）
+
+GIF本体・候補の採用状況・送信履歴をVolumeに保存します。既存の `/watch add` の `gif_keyword` と同じ名前のコレクションがあれば、採用済みのローカルGIFを添付送信します。実ファイルを送るので送信時の検索API呼び出しはありません。Discordへのアップロード通信は毎回発生します。
+
+### Railwayの設定
+
+Volumeを `/INFO` にマウントしたサービスのVariablesを次のように設定します。
+
+```dotenv
+WATCH_DATA_PATH=/INFO/watch_data.json
+GIF_LIBRARY_PATH=/INFO/gif-library
+GIF_STORAGE_MB=1024
+```
+
+`GIF_LIBRARY_PATH` を省略すると、`WATCH_DATA_PATH` と同じフォルダ内の `gif-library` を使います。すでに `WATCH_DATA_PATH=/INFO/watch_data.json` なら追加の保存先設定は不要です。`GIF_STORAGE_MB` はGIF本体の保存上限（既定1024MiB）で、SQLiteやログの容量は含みません。Volumeの空き容量には余裕を持たせてください。
+
+新しい `Pillow` 依存関係を含めて通常どおり再デプロイしてください。起動時にフォルダとSQLiteを作成します。Botには「ファイルを添付」権限も必要です。設定する管理者には「サーバー管理」権限が必要です。
+
+SQLiteとGIFファイルはセットでバックアップしてください。この実装は **単一Botプロセス** での運用を想定しています。
+
+### 使い始める手順
+
+1. 次のどちらかで候補を取り込みます。
+   - `/gif collect keyword:cat count:100` — Wikimedia Commonsから最大100件の新しいGIF候補を取得。
+   - `/gif import keyword:cat attachment:GIFまたはZIP` — 自分で用意したGIFを取り込み。ZIPは複数回に分けて追加できます。必要なら `credit` に著作者・ライセンス等の表示文を指定します。
+2. `/gif review keyword:cat` で実物を1件ずつ表示し、「採用して次へ」「除外して次へ」で選別します。ボタンは5分で期限切れになるため、その場合は同じコマンドで再開できます。
+3. 内容を別途確認済みなら `/gif approve_all keyword:cat` で未確認分を一括採用できます。すでに除外したGIFは復帰させません。
+4. `/watch add target:@対象ユーザー gif_keyword:cat` で送信対象を設定します。
+
+英字の大小・全角半角・連続する空白は正規化します。日本語と英語の翻訳や別名の自動対応はしません。例えば `猫` と `cat` は別コレクションです。
+
+### 管理コマンド
+
+| コマンド | 用途 |
+| --- | --- |
+| `/gif list keyword:cat page:1` | ID・採用状況・容量を10件ずつ表示 |
+| `/gif preview gif_id:12` | IDを指定して実物を表示 |
+| `/gif approve gif_id:12` | 1件を採用・除外から復帰 |
+| `/gif exclude gif_id:12` | 以後の送信対象から外す。ファイルは保持 |
+| `/gif delete gif_id:12` | 登録を削除。他の登録でも使っていなければ実ファイルも削除 |
+| `/gif mode keyword:cat local:false` | 保存済みデータを残して既存のオンライン検索に戻す |
+| `/gif mode keyword:cat local:true` | ローカル優先に戻す |
+
+コレクションの設定と採用状況はDiscordサーバーごとに分離します。同じGIFの実ファイルは内容ハッシュで共有・重複排除しますが、他サーバーの管理IDでは操作できません。
+
+### 送信の挙動
+
+- 採用済みの対象からランダムに選び、全候補を一巡するまでは同じものを再送しません。候補の追加・除外がない間は、各周回で全候補を1回ずつ使います。
+- 対象ユーザーごとの使用回数と直前のGIFをSQLiteに記録し、再起動後も続きから選びます。
+- 周回の境目でも直前と同じGIFを避けます。1件しかない場合は初回だけ送信し、別のGIFが加わるまでスキップします。
+- 送信失敗では履歴を進めません。ただしDiscordへの送信成功直後にプロセスが落ち、履歴保存が間に合わなかった場合は再送される可能性があります。
+- ローカルモードのキーワードは、候補が未採用・不足・欠損・添付上限超過の場合にオンライン検索へ戻りません。`image_keyword` も同時設定していてもローカルGIFを優先します。
+- 採用済みのコレクションがない既存キーワードは、コレクションを作成するまでは従来のオンライン検索です。`/gif collect` は0件で終わってもローカルコレクションを作るため、必要なら `/gif mode ... local:false` で戻せます。
+- 停止・除外・削除は次の送信から反映します。すでにDiscordへ送信を開始したものは取り消せません。
+
+### 自動収集の対象と制限
+
+自動収集元は **Wikimedia Commons** です。検索結果からGIF形式で、対応するCC BY・CC BY-SA・CC0・パブリックドメインの情報と著作者情報を取得できるものを候補として保存します。Commons由来のファイルは、送信時にも著作者・ライセンス・元ページの情報を添えます。独自アップロードに必要なクレジットがあれば `credit` に入力してください。
+
+検索語と実際の内容が合うかは採用前に確認してください。Commonsの画像はミーム専用の品揃えではないため、アニメ・ゲームのキャラクターなどは100件揃わない場合があります。保存・再送できる手持ちのGIFはZIP取り込みで補えます。KLIPY・GIPHYの検索結果を自動的に保存する機能は含めていません。
+
+- 1キーワード100件まで（未確認・除外済みも含む）。不要なファイルは `delete` で枠を空けます。
+- GIFは1件8MiBまで。破損、過大な解像度・展開サイズ・フレーム数は除外します。添付先サーバーの上限が小さい場合は、その上限も適用します。
+- 1回の取り込みは25MiBまで、ZIP内のGIFは100件まで。Discord自身の添付上限がこれより小さい場合はそちらに従います。
+- 自動収集は最大300候補・約10分で打ち切り、途中までの保存結果は保持します。収集や取り込みを同時に複数実行しません。
+- 同じ実ファイルの重複は除去します。見た目が同じでも再エンコードされた別ファイルは別候補になる場合があります。
+
+参考: [Commonsの再利用ガイド](https://commons.wikimedia.org/wiki/Commons:Reusing_content_outside_Wikimedia)、[MediaWiki Imageinfo API](https://www.mediawiki.org/wiki/API:Imageinfo)

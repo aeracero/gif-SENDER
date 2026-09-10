@@ -36,6 +36,7 @@ watch_cog.py
 """
 
 import asyncio
+from contextlib import closing
 import json
 import logging
 import os
@@ -51,6 +52,8 @@ import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands
+
+from gif_store import GifStore
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +98,12 @@ def _save_data(data: dict) -> None:
             temporary.unlink(missing_ok=True)
 
 
+def local_gif_caption(item):
+    """Retain attribution for collected Commons media on every attachment."""
+    parts = [item['credit'], item['source']]
+    return "\n".join(p for p in parts if p)
+
+
 class WatchCog(commands.Cog):
     """指定ユーザーの発言に反応して画像を送るCog"""
 
@@ -115,11 +124,18 @@ class WatchCog(commands.Cog):
         self.data: dict = _load_data()
         self.session: Optional[aiohttp.ClientSession] = None
         self._target_locks = weakref.WeakValueDictionary()
+        self.gif_store = None
 
     async def cog_load(self):
+        self.gif_store = GifStore(
+            Path(os.environ.get("GIF_LIBRARY_PATH", str(DATA_FILE.parent / "gif-library"))),
+            max_bytes=int(os.environ.get("GIF_STORAGE_MB", "1024")) * 1024 * 1024,
+        )
         self.session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15))
 
     async def cog_unload(self):
+        if self.gif_store:
+            self.gif_store.close()
         if self.session:
             await self.session.close()
 
@@ -315,6 +331,24 @@ class WatchCog(commands.Cog):
                 )
 
             if not still_active():
+                return
+            keyword = cfg.get("gif_keyword")
+            if self.gif_store and keyword and self.gif_store.has_collection(guild_id, keyword):
+                item = self.gif_store.pick(guild_id, user_id, keyword, message.guild.filesize_limit)
+                if item is None:
+                    logger.info("採用済みの新しいローカルGIFがありません: keyword=%r", keyword)
+                    return
+                # No await between selection and opening the file. Deletion during
+                # the send cannot replace the already-open attachment.
+                try:
+                    caption = local_gif_caption(item)
+                    with closing(discord.File(self.gif_store.path(item), filename=f"gif-{item['id']}.gif")) as attachment:
+                        await message.channel.send(caption or None, file=attachment,
+                                                   allowed_mentions=discord.AllowedMentions.none())
+                except Exception:
+                    logger.exception("ローカルGIF送信失敗: id=%s", item['id'])
+                    return
+                self.gif_store.mark_sent(guild_id, user_id, item['id'])
                 return
             media_url = await self._fetch_media(cfg, exclude_url=cfg.get("last_media_url"))
             # Commands can change/remove the target while the HTTP request awaits.
